@@ -1,18 +1,17 @@
 from flask import Flask, render_template_string, jsonify, request
 from flask_cors import CORS
 import requests
-import json
 import os
 from datetime import datetime, timedelta
-from collections import defaultdict
+import time
 
 app = Flask(__name__)
 CORS(app)
 
-# Alpha Vantage API Key from environment variable
-ALPHA_VANTAGE_KEY = os.environ.get('ALPHA_VANTAGE_KEY', 'demo')
+# Polygon.io API Key - Get free at https://polygon.io or $9.99/month for basic
+POLYGON_API_KEY = os.environ.get('POLYGON_API_KEY', 'YOUR_KEY_HERE')
 
-# Storage for tracking OI changes
+# Storage
 watchlist = []
 previous_oi_data = {}
 
@@ -21,7 +20,7 @@ html_template = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Options OI Tracker - Alpha Vantage</title>
+    <title>Options OI Tracker - Polygon.io</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
         .container { max-width: 1400px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
@@ -32,54 +31,42 @@ html_template = '''
         button { background: #007bff; color: white; cursor: pointer; border: none; }
         button:hover { background: #0056b3; }
         button.remove { background: #dc3545; padding: 5px 10px; }
-        button.remove:hover { background: #c82333; }
         .info { background: #e7f3ff; padding: 15px; border-radius: 5px; margin: 20px 0; }
         table { width: 100%; border-collapse: collapse; margin-top: 20px; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
-        th { background: #f8f9fa; font-weight: bold; color: #333; position: sticky; top: 0; }
+        th { background: #f8f9fa; font-weight: bold; color: #333; }
         tr:hover { background: #f5f5f5; }
         .call { color: #28a745; font-weight: bold; }
         .put { color: #dc3545; font-weight: bold; }
         .positive { color: #28a745; }
         .negative { color: #dc3545; }
-        .watchlist-item { background: #f8f9fa; padding: 8px; margin: 5px; border-radius: 5px; display: inline-block; }
-        .loading { text-align: center; padding: 20px; }
-        .error { color: #dc3545; padding: 10px; background: #f8d7da; border-radius: 5px; }
-        .success { color: #155724; padding: 10px; background: #d4edda; border-radius: 5px; }
-        .high-volume { background-color: #e3f2fd; }
-        .high-oi-change { background-color: #f3e5f5; }
+        .watchlist-item { background: #f8f9fa; padding: 8px 12px; margin: 5px; border-radius: 5px; display: inline-block; }
+        .success { color: #155724; background: #d4edda; padding: 10px; border-radius: 5px; }
+        .error { color: #721c24; background: #f8d7da; padding: 10px; border-radius: 5px; }
+        .loading { text-align: center; padding: 20px; color: #666; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📊 Options Open Interest Tracker</h1>
+        <h1>📊 Options OI Tracker - Polygon.io</h1>
+        
         <div class="info">
-            <strong>Powered by Alpha Vantage</strong> - Free tier: 500 requests/day, 5/minute<br>
-            Data is 15-minute delayed. OI changes appear after second refresh.
+            <strong>Powered by Polygon.io</strong> - Real market data<br>
+            Free tier: 5 calls/minute | Basic: $9.99/month unlimited<br>
+            Get your API key at <a href="https://polygon.io" target="_blank">polygon.io</a>
         </div>
         
-        <div id="apiStatus" class="status">
-            Checking API status...
-        </div>
+        <div id="apiStatus" class="status">Checking API...</div>
         
         <div class="controls">
-            <input type="text" id="ticker" placeholder="Ticker (e.g., SPY)" style="text-transform: uppercase;">
+            <input type="text" id="ticker" placeholder="Ticker (e.g., SPY)" style="text-transform: uppercase;" value="SPY">
             <select id="expiration">
-                <option value="2024-12-20">Dec 20, 2024</option>
-                <option value="2025-01-17">Jan 17, 2025</option>
-                <option value="2025-02-21">Feb 21, 2025</option>
-                <option value="2025-03-21">Mar 21, 2025</option>
-                <option value="2025-04-18">Apr 18, 2025</option>
-                <option value="2025-05-16">May 16, 2025</option>
-                <option value="2025-06-20">Jun 20, 2025</option>
-                <option value="2025-07-18">Jul 18, 2025</option>
-                <option value="2025-08-15">Aug 15, 2025</option>
-                <option value="2025-09-19">Sep 19, 2025</option>
+                <option value="">Loading dates...</option>
             </select>
             <input type="number" id="strike" placeholder="Strike Price" step="0.5">
             <select id="optionType">
-                <option value="Call">Call</option>
-                <option value="Put">Put</option>
+                <option value="call">Call</option>
+                <option value="put">Put</option>
             </select>
             <button onclick="addToWatchlist()">+ Add to Watchlist</button>
             <button onclick="refreshAll()" style="background: #28a745;">🔄 Refresh All</button>
@@ -89,47 +76,61 @@ html_template = '''
         <div id="watchlistDisplay"></div>
         
         <div id="results"></div>
-        
-        <div style="margin-top: 40px; padding: 20px; background: #f8f9fa; border-radius: 5px;">
-            <h4>Quick Start:</h4>
-            <ol>
-                <li>Enter a ticker symbol (e.g., SPY, AAPL, NVDA)</li>
-                <li>Select an expiration date from the dropdown</li>
-                <li>Enter a strike price</li>
-                <li>Choose Call or Put</li>
-                <li>Click "Add to Watchlist"</li>
-                <li>Use "Refresh All" to update data and see OI changes</li>
-            </ol>
-        </div>
     </div>
     
     <script>
-        async function checkAPIStatus() {
+        let currentExpirations = [];
+        
+        async function checkAPI() {
             try {
                 const response = await fetch('/api/status');
                 const data = await response.json();
                 
-                if (data.api_working) {
+                if (data.working) {
                     document.getElementById('apiStatus').innerHTML = 
-                        '<span class="success">✓ API Connected - ' + data.requests_remaining + ' requests remaining today</span>';
+                        '<div class="success">✓ API Connected - ' + data.tier + '</div>';
                 } else {
                     document.getElementById('apiStatus').innerHTML = 
-                        '<span class="error">✗ API Error: ' + data.error + '</span>';
+                        '<div class="error">✗ API Error: ' + data.error + '</div>';
                 }
             } catch (error) {
                 document.getElementById('apiStatus').innerHTML = 
-                    '<span class="error">✗ Connection Error</span>';
+                    '<div class="error">✗ Connection Error</div>';
             }
         }
         
-        function formatDate(dateStr) {
-            if (!dateStr || dateStr === 'Invalid Date') return 'Invalid Date';
+        async function loadExpirations() {
+            const ticker = document.getElementById('ticker').value.toUpperCase();
+            if (!ticker) return;
+            
+            const select = document.getElementById('expiration');
+            select.innerHTML = '<option value="">Loading...</option>';
+            
             try {
-                const date = new Date(dateStr + 'T12:00:00');
-                if (isNaN(date.getTime())) return dateStr; // Return original if invalid
-                return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
-            } catch (e) {
-                return dateStr; // Return original string if error
+                const response = await fetch(`/api/expirations/${ticker}`);
+                const data = await response.json();
+                
+                if (data.expirations && data.expirations.length > 0) {
+                    currentExpirations = data.expirations;
+                    select.innerHTML = '';
+                    
+                    data.expirations.forEach(exp => {
+                        const option = document.createElement('option');
+                        option.value = exp;
+                        const date = new Date(exp);
+                        option.textContent = date.toLocaleDateString('en-US', { 
+                            year: 'numeric', 
+                            month: 'short', 
+                            day: 'numeric',
+                            weekday: 'short'
+                        });
+                        select.appendChild(option);
+                    });
+                } else {
+                    select.innerHTML = '<option value="">No expirations found</option>';
+                }
+            } catch (error) {
+                select.innerHTML = '<option value="">Error loading dates</option>';
             }
         }
         
@@ -151,13 +152,12 @@ html_template = '''
             });
             
             if (response.ok) {
-                // Clear strike input for easy adding of multiple strikes
                 document.getElementById('strike').value = '';
                 displayWatchlist();
                 refreshAll();
             } else {
-                const error = await response.json();
-                alert('Error: ' + error.error);
+                const data = await response.json();
+                alert('Error: ' + data.error);
             }
         }
         
@@ -171,8 +171,10 @@ html_template = '''
             } else {
                 html += '<div>';
                 data.watchlist.forEach((item, index) => {
+                    const date = new Date(item.expiration);
+                    const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
                     html += `<span class="watchlist-item">
-                        ${item.ticker} $${item.strike} ${item.optionType} (${formatDate(item.expiration)})
+                        ${item.ticker} $${item.strike} ${item.optionType} (${dateStr})
                         <button class="remove" onclick="removeFromWatchlist(${index})">×</button>
                     </span>`;
                 });
@@ -197,7 +199,9 @@ html_template = '''
         }
         
         async function refreshAll() {
-            document.getElementById('results').innerHTML = '<div class="loading">Loading options data...</div>';
+            if (document.querySelector('.watchlist-item')) {
+                document.getElementById('results').innerHTML = '<div class="loading">Loading options data...</div>';
+            }
             
             const response = await fetch('/api/refresh');
             const data = await response.json();
@@ -210,7 +214,7 @@ html_template = '''
             
             if (data.options.length === 0) {
                 document.getElementById('results').innerHTML = 
-                    '<p>No options data available. Add items to your watchlist.</p>';
+                    '<p>No options data available.</p>';
                 return;
             }
             
@@ -219,13 +223,14 @@ html_template = '''
             html += '<tr><th>Option</th><th>Last</th><th>Bid/Ask</th><th>Volume</th><th>Open Interest</th><th>OI Change</th><th>% Change</th><th>IV</th></tr>';
             
             data.options.forEach(opt => {
-                const typeClass = opt.type === 'Call' ? 'call' : 'put';
+                const typeClass = opt.type === 'call' ? 'call' : 'put';
                 const oiChangeClass = opt.oi_change > 0 ? 'positive' : opt.oi_change < 0 ? 'negative' : '';
-                const rowClass = opt.volume > 10000 ? 'high-volume' : (Math.abs(opt.oi_change) > 1000 ? 'high-oi-change' : '');
+                const date = new Date(opt.expiration);
+                const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
                 
-                html += `<tr class="${rowClass}">`;
-                html += `<td><strong>${opt.ticker}</strong> $${opt.strike} <span class="${typeClass}">${opt.type}</span> ${formatDate(opt.expiration)}</td>`;
-                html += `<td>$${opt.last.toFixed(2)}</td>`;
+                html += '<tr>';
+                html += `<td><strong>${opt.ticker}</strong> $${opt.strike} <span class="${typeClass}">${opt.type}</span> ${dateStr}</td>`;
+                html += `<td>$${opt.last_price.toFixed(2)}</td>`;
                 html += `<td>$${opt.bid.toFixed(2)}/$${opt.ask.toFixed(2)}</td>`;
                 html += `<td>${opt.volume.toLocaleString()}</td>`;
                 html += `<td>${opt.open_interest.toLocaleString()}</td>`;
@@ -241,223 +246,5 @@ html_template = '''
             document.getElementById('results').innerHTML = html;
         }
         
-        // Auto-refresh every 60 seconds
-        setInterval(() => {
-            checkAPIStatus();
-            if (document.getElementById('watchlistDisplay').innerText.includes('options)')) {
-                refreshAll();
-            }
-        }, 60000);
-        
         // Initialize
-        checkAPIStatus();
-        displayWatchlist();
-        
-        // Set default ticker
-        document.getElementById('ticker').value = 'SPY';
-    </script>
-</body>
-</html>
-'''
-
-@app.route('/')
-def index():
-    return render_template_string(html_template)
-
-@app.route('/api/status')
-def api_status():
-    """Check API status and remaining requests"""
-    try:
-        # Test API with a simple quote request
-        url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=SPY&apikey={ALPHA_VANTAGE_KEY}"
-        response = requests.get(url, timeout=10)
-        data = response.json()
-        
-        if 'Error Message' in data:
-            return jsonify({'api_working': False, 'error': 'Invalid API key'})
-        elif 'Note' in data:
-            return jsonify({'api_working': False, 'error': 'API limit reached', 'requests_remaining': 0})
-        else:
-            # Estimate remaining requests (Alpha Vantage doesn't provide exact count)
-            return jsonify({'api_working': True, 'requests_remaining': '~500'})
-    except Exception as e:
-        return jsonify({'api_working': False, 'error': str(e)})
-
-@app.route('/api/expirations/<ticker>')
-def get_expirations(ticker):
-    """Get available expiration dates for a ticker"""
-    try:
-        # First, let's provide some common expiration dates as fallback
-        from datetime import datetime, timedelta
-        today = datetime.now()
-        
-        # Generate standard monthly expiration dates (3rd Friday of each month)
-        dates = []
-        for i in range(6):  # Next 6 months
-            # Get first day of the month
-            if i == 0:
-                month = today
-            else:
-                month = today + timedelta(days=30*i)
-            
-            # Find the third Friday
-            first_day = month.replace(day=1)
-            first_friday = first_day + timedelta(days=(4 - first_day.weekday()) % 7)
-            third_friday = first_friday + timedelta(weeks=2)
-            
-            dates.append(third_friday.strftime('%Y-%m-%d'))
-        
-        # Try to get real dates from Alpha Vantage
-        url = f"https://www.alphavantage.co/query?function=REALTIME_OPTIONS&symbol={ticker}&apikey={ALPHA_VANTAGE_KEY}"
-        response = requests.get(url, timeout=10)
-        data = response.json()
-        
-        if 'data' in data and len(data['data']) > 0:
-            # Extract unique expiration dates
-            api_dates = list(set(opt['expiration'] for opt in data['data'] if 'expiration' in opt))
-            if api_dates:
-                api_dates.sort()
-                # Return API dates if available
-                return jsonify({'dates': api_dates[:10]})
-        
-        # Return generated dates as fallback
-        return jsonify({'dates': dates})
-            
-    except Exception as e:
-        # If all fails, return some standard dates
-        return jsonify({
-            'dates': [
-                '2024-12-20',  # December monthly
-                '2025-01-17',  # January monthly
-                '2025-02-21',  # February monthly
-                '2025-03-21',  # March monthly
-                '2025-04-18',  # April monthly
-                '2025-05-16'   # May monthly
-            ],
-            'error': f'Using default dates. Error: {str(e)}'
-        })
-
-@app.route('/api/watchlist')
-def get_watchlist():
-    return jsonify({'watchlist': watchlist})
-
-@app.route('/api/watchlist/add', methods=['POST'])
-def add_to_watchlist():
-    data = request.json
-    
-    # Check if already in watchlist
-    for item in watchlist:
-        if (item['ticker'] == data['ticker'] and 
-            item['strike'] == data['strike'] and 
-            item['expiration'] == data['expiration'] and
-            item['optionType'] == data['optionType']):
-            return jsonify({'error': 'Already in watchlist'}), 400
-    
-    watchlist.append(data)
-    return jsonify({'success': True})
-
-@app.route('/api/watchlist/remove/<int:index>', methods=['DELETE'])
-def remove_from_watchlist(index):
-    if 0 <= index < len(watchlist):
-        watchlist.pop(index)
-    return jsonify({'success': True})
-
-@app.route('/api/watchlist/clear', methods=['DELETE'])
-def clear_watchlist():
-    watchlist.clear()
-    previous_oi_data.clear()
-    return jsonify({'success': True})
-
-@app.route('/api/refresh')
-def refresh_data():
-    """Fetch current data for all watchlist items"""
-    if not watchlist:
-        return jsonify({'options': []})
-    
-    results = []
-    
-    # Group by ticker for efficiency
-    ticker_groups = defaultdict(list)
-    for item in watchlist:
-        ticker_groups[item['ticker']].append(item)
-    
-    for ticker, items in ticker_groups.items():
-        try:
-            # Fetch real-time options data
-            url = f"https://www.alphavantage.co/query?function=REALTIME_OPTIONS&symbol={ticker}&apikey={ALPHA_VANTAGE_KEY}"
-            response = requests.get(url, timeout=10)
-            data = response.json()
-            
-            if 'data' not in data:
-                if 'Note' in data:
-                    return jsonify({'error': 'API call limit reached. Please wait 1 minute.'})
-                elif 'Error Message' in data:
-                    return jsonify({'error': 'Invalid API key or symbol'})
-                continue
-            
-            # Process each watchlist item
-            for item in items:
-                # Find matching option
-                found = False
-                for opt in data['data']:
-                    if (opt['expiration'] == item['expiration'] and 
-                        float(opt['strike']) == item['strike'] and
-                        opt['type'].upper() == item['optionType'].upper()):
-                        
-                        # Calculate OI change
-                        key = f"{ticker}_{item['expiration']}_{item['strike']}_{item['optionType']}"
-                        current_oi = int(float(opt.get('open_interest', 0)))
-                        
-                        oi_change = 0
-                        oi_pct_change = 0
-                        
-                        if key in previous_oi_data:
-                            prev_oi = previous_oi_data[key]
-                            oi_change = current_oi - prev_oi
-                            if prev_oi > 0:
-                                oi_pct_change = (oi_change / prev_oi) * 100
-                        
-                        previous_oi_data[key] = current_oi
-                        
-                        results.append({
-                            'ticker': ticker,
-                            'expiration': item['expiration'],
-                            'strike': item['strike'],
-                            'type': item['optionType'],
-                            'last': float(opt.get('last', 0)),
-                            'bid': float(opt.get('bid', 0)),
-                            'ask': float(opt.get('ask', 0)),
-                            'volume': int(float(opt.get('volume', 0))),
-                            'open_interest': current_oi,
-                            'oi_change': oi_change,
-                            'oi_pct_change': oi_pct_change,
-                            'implied_volatility': float(opt.get('implied_volatility', 0))
-                        })
-                        found = True
-                        break
-                
-                if not found:
-                    # Option not found in data - might be expired or invalid
-                    results.append({
-                        'ticker': ticker,
-                        'expiration': item['expiration'],
-                        'strike': item['strike'],
-                        'type': item['optionType'],
-                        'last': 0,
-                        'bid': 0,
-                        'ask': 0,
-                        'volume': 0,
-                        'open_interest': 0,
-                        'oi_change': 0,
-                        'oi_pct_change': 0,
-                        'implied_volatility': 0
-                    })
-                        
-        except Exception as e:
-            print(f"Error fetching {ticker}: {e}")
-            continue
-    
-    return jsonify({'options': results})
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+        document.getElementById('ticker').addEventListener('change', loadExpirations);

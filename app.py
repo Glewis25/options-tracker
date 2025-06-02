@@ -65,7 +65,16 @@ html_template = '''
         <div class="controls">
             <input type="text" id="ticker" placeholder="Ticker (e.g., SPY)" style="text-transform: uppercase;">
             <select id="expiration">
-                <option value="">Enter ticker first</option>
+                <option value="2024-12-20">Dec 20, 2024</option>
+                <option value="2025-01-17">Jan 17, 2025</option>
+                <option value="2025-02-21">Feb 21, 2025</option>
+                <option value="2025-03-21">Mar 21, 2025</option>
+                <option value="2025-04-18">Apr 18, 2025</option>
+                <option value="2025-05-16">May 16, 2025</option>
+                <option value="2025-06-20">Jun 20, 2025</option>
+                <option value="2025-07-18">Jul 18, 2025</option>
+                <option value="2025-08-15">Aug 15, 2025</option>
+                <option value="2025-09-19">Sep 19, 2025</option>
             </select>
             <input type="number" id="strike" placeholder="Strike Price" step="0.5">
             <select id="optionType">
@@ -95,8 +104,6 @@ html_template = '''
     </div>
     
     <script>
-        let availableDates = {};
-        
         async function checkAPIStatus() {
             try {
                 const response = await fetch('/api/status');
@@ -112,68 +119,6 @@ html_template = '''
             } catch (error) {
                 document.getElementById('apiStatus').innerHTML = 
                     '<span class="error">✗ Connection Error</span>';
-            }
-        }
-        
-        async function loadExpirationDates() {
-            const ticker = document.getElementById('ticker').value.toUpperCase();
-            if (!ticker) {
-                document.getElementById('expiration').innerHTML = '<option value="">Enter ticker first</option>';
-                return;
-            }
-            
-            const select = document.getElementById('expiration');
-            select.innerHTML = '<option value="">Loading dates...</option>';
-            
-            try {
-                const response = await fetch(`/api/expirations/${ticker}`);
-                const data = await response.json();
-                
-                if (data.dates && data.dates.length > 0) {
-                    select.innerHTML = '<option value="">Select expiration date</option>';
-                    data.dates.forEach(date => {
-                        const option = document.createElement('option');
-                        option.value = date;
-                        // Format date nicely
-                        const dateObj = new Date(date + 'T12:00:00');
-                        const formatted = dateObj.toLocaleDateString('en-US', { 
-                            year: 'numeric', 
-                            month: 'short', 
-                            day: 'numeric',
-                            weekday: 'short'
-                        });
-                        option.textContent = formatted;
-                        select.appendChild(option);
-                    });
-                    
-                    // Auto-select first date
-                    if (data.dates.length > 0) {
-                        select.value = data.dates[0];
-                    }
-                } else {
-                    select.innerHTML = '<option value="">No dates available</option>';
-                }
-            } catch (error) {
-                console.error('Error loading dates:', error);
-                // Provide fallback dates
-                select.innerHTML = '<option value="">Select expiration date</option>';
-                const fallbackDates = [
-                    '2024-12-20',
-                    '2025-01-17',
-                    '2025-02-21',
-                    '2025-03-21'
-                ];
-                fallbackDates.forEach(date => {
-                    const option = document.createElement('option');
-                    option.value = date;
-                    const dateObj = new Date(date + 'T12:00:00');
-                    option.textContent = dateObj.toLocaleDateString('en-US', { 
-                        year: 'numeric', 
-                        month: 'short', 
-                        day: 'numeric'
-                    });
-                    select.appendChild(option);
-                });
             }
         }
         
@@ -305,17 +250,11 @@ html_template = '''
         }, 60000);
         
         // Initialize
-        document.getElementById('ticker').addEventListener('blur', loadExpirationDates);
-        document.getElementById('ticker').addEventListener('keyup', function(e) {
-            if (e.key === 'Enter') loadExpirationDates();
-        });
-        
         checkAPIStatus();
         displayWatchlist();
         
-        // Set default ticker but don't load dates yet
+        // Set default ticker
         document.getElementById('ticker').value = 'SPY';
-        // User can load dates when ready
     </script>
 </body>
 </html>
